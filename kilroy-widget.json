@@ -1,0 +1,6 @@
+{
+  "name": "Kilroy Vote",
+  "description": "A simple yes/no voting widget for group discussions.",
+  "swarm": "public",
+  "audience": "group"
+}

@@ -38,4 +38,4 @@ Open the widget in a webwidget instance. Enter your name and click JOIN. Cast Ye
 
 ## Files
 
-- `vote.html` — Main voting widget (self-contained HTML with embedded CSS and JavaScript)
+- `index.html` — Main voting widget (self-contained HTML with embedded CSS and JavaScript)

@@ -34,7 +34,7 @@ A real-time yes/no voting widget where participants join with a username and cas
 
 | Command | Usage |
 |---------|-------|
-| Open vote | Open `vote.html` in a webwidget instance |
+| Open vote | Open `index.html` in a webwidget instance |
 | Join | Enter username, click JOIN or press Enter |
 | Vote Yes | Click the Yes button |
 | Vote No | Click the No button |
