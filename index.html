@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kilroy Vote</title>
-<script type="module" src="/apps/kilroy.utils/lib/kilroy/js/webwidget_sdk.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -51,6 +50,9 @@
     transition: background 0.2s;
   }
   #lobby button:hover { background: #c73850; }
+  #lobby button:disabled, #buttons button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .status { margin-top: 16px; font-size: 0.9rem; color: #a0a0c0; }
+  .status.error { color: #ff7a8a; }
 
   /* Voting UI */
   #voting {
@@ -124,126 +126,94 @@
 <div id="lobby">
   <h1>🗳️ Kilroy Vote</h1>
   <input id="name-input" type="text" placeholder="Enter your name" maxlength="30" autofocus>
-  <button id="join-btn">Join Vote</button>
+  <button id="join-btn" disabled>Join Vote</button>
+  <p id="lobby-status" class="status" role="status">Connecting...</p>
 </div>
 
 <!-- Voting Screen -->
 <div id="voting" class="voting-container">
   <h2 id="welcome-msg"></h2>
   <div id="display-area">
-    <div style="color:#666;">Waiting for votes…</div>
+    <div class="placeholder" style="color:#666;">Waiting for votes…</div>
   </div>
   <div id="buttons">
     <button id="btn-yes">Yes</button>
     <button id="btn-no">No</button>
   </div>
+  <p id="vote-status" class="status" role="status"></p>
 </div>
 
 <script type="module">
   import { initWebWidget } from '/apps/kilroy.utils/lib/kilroy/js/webwidget_sdk.js';
 
-  let userName = '';
-  let sdk = null;
+  const PREFIX = '/ww.vote ';
+  const FILTERS = ['^/ww\\.vote '];
+  const MAX_TEXT = 200;
 
-  /* ---- Lobby ---- */
   const nameInput = document.getElementById('name-input');
-  const joinBtn   = document.getElementById('join-btn');
+  const joinBtn = document.getElementById('join-btn');
+  const lobbyStatus = document.getElementById('lobby-status');
+  const voteStatus = document.getElementById('vote-status');
+  const yesBtn = document.getElementById('btn-yes');
+  const noBtn = document.getElementById('btn-no');
 
-  joinBtn.addEventListener('click', enterLobby);
-  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') enterLobby(); });
+  const params = new URLSearchParams(window.location.search);
+  const alias = (params.get('alias') || '').trim();
+  const groupName = (params.get('group_name') || '').trim();
+
+  let sdk = null;
+  let userName = '';
+  let connected = false;
+  let ready = false;
+  let closed = false;
+  const subscriptions = [];
+
+  function setStatus(text, isError = false) {
+    for (const el of [lobbyStatus, voteStatus]) {
+      el.textContent = text;
+      el.classList.toggle('error', isError);
+    }
+  }
+
+  function updateControls() {
+    const live = !closed && ready && connected;
+    joinBtn.disabled = !live;
+    yesBtn.disabled = !live || !userName;
+    noBtn.disabled = !live || !userName;
+  }
 
   function enterLobby() {
-    const name = nameInput.value.trim();
+    const name = nameInput.value.trim().slice(0, 30);
     if (!name) { nameInput.focus(); return; }
+    if (joinBtn.disabled) return;
     userName = name;
     document.getElementById('lobby').style.display = 'none';
     document.getElementById('voting').style.display = 'flex';
     document.getElementById('welcome-msg').textContent = 'Voting as: ' + userName;
-    setupClickFocus();
-    initSDK();
+    updateControls();
   }
 
-  /* ---- Focus activation on click ---- */
-  function setupClickFocus() {
-    const votingContainer = document.querySelector('.voting-container');
-    if (votingContainer) {
-      votingContainer.addEventListener('click', requestWidgetFocus, true);
+  async function sendVote(choice) {
+    if (!sdk || !userName || yesBtn.disabled) return;
+    try {
+      await sdk.sendMessage(`${PREFIX}${userName} votes ${choice}`, { username: userName, type: 'text/plain' });
+      addVoteMessage(`${userName} votes ${choice}`);
+      setStatus('');
+    } catch (err) {
+      setStatus('Vote failed to send: ' + (err?.message || err), true);
     }
   }
 
-  function requestWidgetFocus() {
-    // Send focus request to parent Kilroy window
-    if (window.parent !== window) {
-      window.parent.postMessage({
-        type: 'webwidget.focus',
-        widget_alias: document.querySelector('script')?.src || 'kilroy-vote'
-      }, '*');
-    }
-  }
-
-  /* ---- SDK init ---- */
-  function initSDK() {
-    const sparams = new Proxy(new URLSearchParams(window.location.search), {
-      get: (searchParams, prop) => searchParams.get(prop),
-    });
-    const alias = (sparams.alias || "").trim();
-    const guid  = (sparams.guid  || "").trim();
-
-    if (!alias) {
-      console.error('[vote] Missing alias in URL args. Include alias= in the query string.');
-      return;
-    }
-
-    sdk = initWebWidget({
-      alias: alias,
-      guid:  guid || kilroy_guid(),
-      focusBridgeEnabled: true,
-    });
-
-    // Filter only /ww.vote messages
-    sdk.setMessageFilters(['/ww.vote']);
-
-    sdk.onMessage(handleIncoming);
-    console.log('[vote] Message filters set:', sdk.messageFilters);
-
-    sdk.ready.then(() => {
-      console.log('[vote] Connected to swarm');
-    }).catch(err => {
-      console.error('[vote] Connection failed:', err);
-    });
-  }
-
-  /* ---- Send votes ---- */
-  document.getElementById('btn-yes').addEventListener('click', () => sendVote('yes'));
-  document.getElementById('btn-no').addEventListener('click',  () => sendVote('no'));
-
-  function sendVote(choice) {
-    if (!sdk) return;
-    const msg = '/ww.vote ' + userName + ' votes ' + choice;
-    sdk.sendMessage(msg, {
-      username: userName,
-      type: 'text/plain',
-    });
-    console.log('[vote] Sent:', msg);
-  }
-
-  /* ---- Handle incoming votes ---- */
   function handleIncoming(event) {
-    // event.message contains the raw message string, e.g. "/ww.vote Alice votes yes"
-    const msg = event.message || '';
-    if (!msg.startsWith('/ww.vote ')) return;
-
-    // Strip the /ww.vote prefix to get "<username> votes <yes/no>"
-    const body = msg.replace(/^\/ww\.vote\s+/, '').trim();
-    addVoteMessage(body);
+    if (closed || typeof event.message !== 'string' || !event.message.startsWith(PREFIX)) return;
+    const body = event.message.slice(PREFIX.length).trim();
+    if (!body) return;
+    addVoteMessage(body.slice(0, MAX_TEXT));
   }
 
   function addVoteMessage(text) {
     const area = document.getElementById('display-area');
-    // Clear placeholder
-    if (area.children.length === 1 && area.children[0].style.color === 'rgb(102, 102, 102)') {
-      area.innerHTML = '';
-    }
+    area.querySelector('.placeholder')?.remove();
     const div = document.createElement('div');
     div.className = 'vote-msg';
     div.textContent = text;
@@ -251,13 +221,51 @@
     area.scrollTop = area.scrollHeight;
   }
 
-  /* ---- Guid helper (inline from SDK docs) ---- */
-  function kilroy_guid() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-      const r = (Math.random() * 16) | 0;
-      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-    });
+  function closeWidget() {
+    if (closed) return;
+    closed = true;
+    ready = false;
+    subscriptions.forEach(unsubscribe => unsubscribe());
+    if (sdk) sdk.disconnect();
+    setStatus('Closed');
+    updateControls();
   }
+
+  joinBtn.addEventListener('click', enterLobby);
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') enterLobby(); });
+  yesBtn.addEventListener('click', () => sendVote('yes'));
+  noBtn.addEventListener('click', () => sendVote('no'));
+  window.addEventListener('pagehide', event => { if (!event.persisted) closeWidget(); });
+
+  async function init() {
+    if (!alias || !groupName) {
+      setStatus('Configuration error: this widget must be launched by Kilroy (missing alias or group_name).', true);
+      updateControls();
+      return;
+    }
+    try {
+      sdk = initWebWidget({ focusBridgeEnabled: true, targetOrigin: window.location.origin });
+      connected = sdk.connected;
+      subscriptions.push(sdk.onConnectionState(event => {
+        connected = !!event.connected;
+        if (ready) setStatus(connected ? '' : 'Disconnected', !connected);
+        updateControls();
+      }));
+      subscriptions.push(sdk.onMessage(handleIncoming));
+      subscriptions.push(sdk.onLifecycle(({ event }) => { if (event === 'WIDGET_CLOSING') closeWidget(); }));
+      await sdk.ready;
+      await sdk.setMessageFilters(FILTERS);
+      if (closed) return;
+      connected = sdk.connected;
+      ready = true;
+      setStatus(connected ? '' : 'Disconnected', !connected);
+    } catch (err) {
+      setStatus('Initialization failed: ' + (err?.message || err), true);
+    }
+    updateControls();
+  }
+
+  init();
 </script>
 </body>
 </html>
